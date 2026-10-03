@@ -12,6 +12,7 @@ export const formatTime = (seconds: number, separator = ','): string => {
 
 export const parseTime = (value: string): number => {
   const normalized = value.trim().replace(',', '.')
+  if (!/^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/.test(normalized)) return 0
   const parts = normalized.split(':').map(Number)
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
   if (parts.length === 2) return parts[0] * 60 + parts[1]
@@ -28,8 +29,12 @@ export const parseSrt = (text: string, actorId = 'actor-narrator'): Cue[] => {
     const [from, to] = lines[timeLineIndex].split('-->').map((part) => part.trim().split(' ')[0])
     const content = lines.slice(timeLineIndex + 1).join('\n').trim()
     if (!content) continue
+    // SRT 序号即片方台词编号，用于后续修订包对账
+    const declared = Number(lines[0])
+    const lineNo = timeLineIndex >= 1 && Number.isInteger(declared) && declared > 0 ? declared : parsed.length + 1
     parsed.push({
       id: makeId('cue'),
+      lineNo,
       start: parseTime(from),
       end: parseTime(to),
       source: content,
@@ -54,6 +59,7 @@ export const parseScript = (text: string, actors: { id: string; name: string }[]
     const actor = actors.find((item) => item.name === actorName) ?? actors[0]
     result.push({
       id: makeId('cue'),
+      lineNo: index + 1,
       start: index * 4,
       end: index * 4 + 3.5,
       source: content,

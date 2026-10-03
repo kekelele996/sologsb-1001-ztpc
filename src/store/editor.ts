@@ -1,8 +1,12 @@
 import { defineStore } from 'pinia'
-import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
+import type { ArchivedCue, Cue, EditorDocument, HistoryEntry, Locale, RevisionStats, Snapshot } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
 import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
+import {
+  applyRevisionToCues, BASELINE_SOURCE_VERSION, buildRevisionPackage, migrateDocument,
+  parseRevisionPackage, REVISION_DUPLICATE, REVISION_PARSE_ERROR, revisionContentHash,
+} from '../utils/revision'
 import { translate, type MessageKey } from '../i18n'
 
 const DOCUMENT_ID = 'subtitle-dubbing-document'
@@ -16,6 +20,9 @@ const createDefaultDocument = (): EditorDocument => ({
   id: DOCUMENT_ID,
   title: '纪录片《开源之路》中文配音',
   language: 'zh-CN',
+  sourceVersion: BASELINE_SOURCE_VERSION,
+  archivedCues: [],
+  appliedRevisions: [],
   revision: 0,
   updatedAt: Date.now(),
   lastWriter: '',
@@ -32,12 +39,12 @@ const createDefaultDocument = (): EditorDocument => ({
     { id: 'term-04', source: 'community', target: '社区', note: '泛指开发者社区' },
   ],
   cues: [
-    { id: 'cue-demo-01', start: 0, end: 4.2, source: '开源并不是一项孤立的技术，而是一种持续协作的方式。', target: '开源并不是一项孤立的技术，而是一种持续协作的方式。', actorId: 'actor-narrator', speed: 1.02, termIds: ['term-01'], status: 'reviewed', locked: true },
-    { id: 'cue-demo-02', start: 4.3, end: 8.6, source: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', target: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', actorId: 'actor-host', speed: 1, termIds: ['term-04', 'term-02'], status: 'reviewed', locked: false },
-    { id: 'cue-demo-03', start: 8.8, end: 13.5, source: '每个拉取请求背后，都有一段需要被理解的上下文。', target: '每个拉取请求背后，都有一段需要被理解的上下文。', actorId: 'actor-lin', speed: 0.96, termIds: ['term-03'], status: 'reviewed', locked: false },
-    { id: 'cue-demo-04', start: 13.7, end: 18.8, source: '请您先介绍一次印象最深的代码评审。', target: '请您先介绍一次印象最深的代码评审。', actorId: 'actor-host', speed: 1.03, termIds: [], status: 'draft', locked: false },
-    { id: 'cue-demo-05', start: 19, end: 25.1, source: '那次修改很小，却让新用户第一次能够顺利完成安装。', target: '那次修改很小，却让新用户第一次顺利完成安装。', actorId: 'actor-lin', speed: 0.98, termIds: [], status: 'issue', locked: false },
-    { id: 'cue-demo-06', start: 25.4, end: 31.2, source: '所以我们决定把安装说明拆开，并为每个平台补上验证步骤。', target: '因此，我们拆分安装说明，并为每个平台补上验证步骤。', actorId: 'actor-chen', speed: 1.05, termIds: [], status: 'draft', locked: false },
+    { id: 'cue-demo-01', lineNo: 1, start: 0, end: 4.2, source: '开源并不是一项孤立的技术，而是一种持续协作的方式。', target: '开源并不是一项孤立的技术，而是一种持续协作的方式。', actorId: 'actor-narrator', speed: 1.02, termIds: ['term-01'], status: 'reviewed', locked: true, sourceVersion: BASELINE_SOURCE_VERSION },
+    { id: 'cue-demo-02', lineNo: 2, start: 4.3, end: 8.6, source: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', target: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', actorId: 'actor-host', speed: 1, termIds: ['term-04', 'term-02'], status: 'reviewed', locked: false, sourceVersion: BASELINE_SOURCE_VERSION },
+    { id: 'cue-demo-03', lineNo: 3, start: 8.8, end: 13.5, source: '每个拉取请求背后，都有一段需要被理解的上下文。', target: '每个拉取请求背后，都有一段需要被理解的上下文。', actorId: 'actor-lin', speed: 0.96, termIds: ['term-03'], status: 'reviewed', locked: false, sourceVersion: BASELINE_SOURCE_VERSION },
+    { id: 'cue-demo-04', lineNo: 4, start: 13.7, end: 18.8, source: '请您先介绍一次印象最深的代码评审。', target: '请您先介绍一次印象最深的代码评审。', actorId: 'actor-host', speed: 1.03, termIds: [], status: 'draft', locked: false, sourceVersion: BASELINE_SOURCE_VERSION },
+    { id: 'cue-demo-05', lineNo: 5, start: 19, end: 25.1, source: '那次修改很小，却让新用户第一次能够顺利完成安装。', target: '那次修改很小，却让新用户第一次顺利完成安装。', actorId: 'actor-lin', speed: 0.98, termIds: [], status: 'issue', locked: false, sourceVersion: BASELINE_SOURCE_VERSION },
+    { id: 'cue-demo-06', lineNo: 6, start: 25.4, end: 31.2, source: '所以我们决定把安装说明拆开，并为每个平台补上验证步骤。', target: '因此，我们拆分安装说明，并为每个平台补上验证步骤。', actorId: 'actor-chen', speed: 1.05, termIds: [], status: 'draft', locked: false, sourceVersion: BASELINE_SOURCE_VERSION },
   ],
   snapshots: [],
 })
@@ -58,8 +65,8 @@ export const useEditorStore = defineStore('subtitle-editor', {
     tabId: makeId('tab'),
     lastSeenRevision: 0,
     mutationSerial: 0,
-    past: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
-    future: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
+    past: [] as HistoryEntry[],
+    future: [] as HistoryEntry[],
   }),
   getters: {
     t: (state) => (key: MessageKey, values?: Record<string, string | number>) => translate(state.document.language, key, values),
@@ -83,7 +90,12 @@ export const useEditorStore = defineStore('subtitle-editor', {
       if (stored) {
         this.document = stored
         this.lastSeenRevision = stored.revision
+        // 旧稿没记原文字幕版本：升级后按当前版本回填
+        if (migrateDocument(this.document, BASELINE_SOURCE_VERSION)) {
+          this.persist('migrate-source-version').catch((error) => console.error('migrate', error))
+        }
       } else {
+        migrateDocument(this.document, BASELINE_SOURCE_VERSION)
         const saved = await saveDocument(plainDocument(this.document))
         this.document = saved
         this.lastSeenRevision = saved.revision
@@ -123,7 +135,13 @@ export const useEditorStore = defineStore('subtitle-editor', {
       const before = cloneCues(this.document.cues)
       const working = cloneCues(this.document.cues)
       mutate(working)
-      this.past.push({ label, cues: before, selectedCueId: this.selectedCueId })
+      this.past.push({
+        label,
+        cues: before,
+        selectedCueId: this.selectedCueId,
+        sourceVersion: this.document.sourceVersion,
+        archivedCues: cloneCues(this.document.archivedCues) as ArchivedCue[],
+      })
       if (this.past.length > 60) this.past.shift()
       this.future = []
       this.document.cues = working
@@ -198,18 +216,42 @@ export const useEditorStore = defineStore('subtitle-editor', {
     undo() {
       const entry = this.past.pop()
       if (!entry) return
-      this.future.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
-      this.document.cues = cloneCues(entry.cues)
+      this.future.push({
+        label: entry.label,
+        cues: cloneCues(this.document.cues),
+        selectedCueId: this.selectedCueId,
+        sourceVersion: this.document.sourceVersion,
+        archivedCues: cloneCues(this.document.archivedCues) as ArchivedCue[],
+      })
+      this.document.cues = this.normalizeCueVersions(cloneCues(entry.cues))
       this.selectedCueId = entry.selectedCueId
+      if (entry.sourceVersion !== undefined) this.document.sourceVersion = entry.sourceVersion
+      if (entry.archivedCues) this.document.archivedCues = cloneCues(entry.archivedCues) as ArchivedCue[]
       this.markChanged(`undo:${entry.label}`)
     },
     redo() {
       const entry = this.future.pop()
       if (!entry) return
-      this.past.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
-      this.document.cues = cloneCues(entry.cues)
+      this.past.push({
+        label: entry.label,
+        cues: cloneCues(this.document.cues),
+        selectedCueId: this.selectedCueId,
+        sourceVersion: this.document.sourceVersion,
+        archivedCues: cloneCues(this.document.archivedCues) as ArchivedCue[],
+      })
+      this.document.cues = this.normalizeCueVersions(cloneCues(entry.cues))
       this.selectedCueId = entry.selectedCueId
+      if (entry.sourceVersion !== undefined) this.document.sourceVersion = entry.sourceVersion
+      if (entry.archivedCues) this.document.archivedCues = cloneCues(entry.archivedCues) as ArchivedCue[]
       this.markChanged(`redo:${entry.label}`)
+    },
+    /** 老快照/撤销栈里的台词可能没有编号或原文字幕版本，按当前版本回填 */
+    normalizeCueVersions(cues: Cue[]): Cue[] {
+      cues.forEach((cue, index) => {
+        if (cue.lineNo === undefined) cue.lineNo = index + 1
+        if (!cue.sourceVersion) cue.sourceVersion = this.document.sourceVersion || BASELINE_SOURCE_VERSION
+      })
+      return cues
     },
     updateCue(id: string, patch: Partial<Cue>, historyLabel = 'update-cue') {
       this.commit(historyLabel, (cues) => {
@@ -238,11 +280,20 @@ export const useEditorStore = defineStore('subtitle-editor', {
         const second: Cue = {
           ...cue,
           id: secondId,
+          lineNo: null,
           start: middle,
           source: cue.source.slice(sourceMid).trim(),
           target: cue.target.slice(targetMid).trim(),
           status: 'draft',
           locked: false,
+          sourceChanged: undefined,
+          timingChanged: undefined,
+          previousSource: undefined,
+          previousStart: undefined,
+          previousEnd: undefined,
+          pendingSource: undefined,
+          pendingStart: undefined,
+          pendingEnd: undefined,
         }
         cue.end = middle
         cue.source = cue.source.slice(0, sourceMid).trim()
@@ -292,9 +343,15 @@ export const useEditorStore = defineStore('subtitle-editor', {
     restoreSnapshot(id: string) {
       const snapshot = this.document.snapshots.find((item) => item.id === id)
       if (!snapshot) return
-      this.past.push({ label: 'restore-snapshot', cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.past.push({
+        label: 'restore-snapshot',
+        cues: cloneCues(this.document.cues),
+        selectedCueId: this.selectedCueId,
+        sourceVersion: this.document.sourceVersion,
+        archivedCues: cloneCues(this.document.archivedCues) as ArchivedCue[],
+      })
       this.future = []
-      this.document.cues = cloneCues(snapshot.cues)
+      this.document.cues = this.normalizeCueVersions(cloneCues(snapshot.cues))
       this.selectedCueId = this.document.cues[0]?.id ?? null
       this.markChanged('restore-snapshot')
     },
@@ -305,6 +362,10 @@ export const useEditorStore = defineStore('subtitle-editor', {
       this.commit('import', (current) => {
         current.splice(0, current.length, ...cues)
       }, cues[0].id)
+      // 全新原文导入视为新的片方基线，旧的修订记录与存档不再参与对账
+      this.document.sourceVersion = BASELINE_SOURCE_VERSION
+      this.document.appliedRevisions = []
+      this.document.archivedCues = []
       return cues.length
     },
     exportSrt() {
@@ -315,6 +376,125 @@ export const useEditorStore = defineStore('subtitle-editor', {
       anchor.download = `${this.document.title || 'subtitle'}.srt`
       anchor.click()
       URL.revokeObjectURL(url)
+    },
+    /**
+     * 应用片方修订包。
+     * - 解析失败：整包不生效，已应用的那次留着
+     * - 同一批重发（编号或内容指纹相同）：不重复套用
+     */
+    applyRevisionText(text: string): { version: string; stats: RevisionStats } {
+      const revision = parseRevisionPackage(text)
+      const hash = revisionContentHash(revision)
+      const already = this.document.appliedRevisions.some(
+        (entry) => entry.packageId === revision.packageId || entry.contentHash === hash,
+      )
+      if (already) throw new Error(REVISION_DUPLICATE)
+
+      // 先在拷贝上完成对账，任何异常都不会触碰当前稿，保证整包原子生效
+      const result = applyRevisionToCues(
+        cloneCues(this.document.cues),
+        cloneCues(this.document.archivedCues) as ArchivedCue[],
+        revision,
+        this.document.actors[0]?.id ?? 'actor-narrator',
+      )
+
+      this.past.push({
+        label: `revision:${revision.version}`,
+        cues: cloneCues(this.document.cues),
+        selectedCueId: this.selectedCueId,
+        sourceVersion: this.document.sourceVersion,
+        archivedCues: cloneCues(this.document.archivedCues) as ArchivedCue[],
+      })
+      if (this.past.length > 60) this.past.shift()
+      this.future = []
+      this.document.cues = result.cues
+      this.document.archivedCues = result.archived
+      this.document.sourceVersion = revision.version
+      this.document.appliedRevisions.unshift({
+        packageId: revision.packageId,
+        version: revision.version,
+        appliedAt: Date.now(),
+        contentHash: hash,
+        changed: result.stats.changed,
+        added: result.stats.added,
+        removed: result.stats.removed,
+      })
+      this.selectedCueId = result.cues.find((cue) => cue.sourceChanged || cue.timingChanged)?.id ?? this.selectedCueId
+      this.markChanged('apply-revision')
+      return { version: revision.version, stats: result.stats }
+    },
+    /** 导出当前活动稿原文为修订包格式 */
+    exportRevisionTemplate(version: string) {
+      const revision = buildRevisionPackage(this.document.cues, version.trim() || this.document.sourceVersion)
+      const blob = new Blob([JSON.stringify(revision, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `source-${revision.version}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    },
+    /** 校对完成，收起新旧原文并列标记 */
+    dismissCueRevision(id: string) {
+      this.commit('dismiss-revision', (cues) => {
+        const cue = cues.find((item) => item.id === id)
+        if (!cue || cue.locked) return
+        cue.sourceChanged = undefined
+        cue.timingChanged = undefined
+        cue.previousSource = undefined
+        cue.previousStart = undefined
+        cue.previousEnd = undefined
+        cue.pendingSource = undefined
+        cue.pendingStart = undefined
+        cue.pendingEnd = undefined
+      })
+    },
+    /** 锁定台词解锁后，采用片方挂起的新原文/时码 */
+    adoptPendingSource(id: string) {
+      this.commit('adopt-pending', (cues) => {
+        const cue = cues.find((item) => item.id === id)
+        if (!cue || cue.locked || cue.pendingSource === undefined) return
+        cue.source = cue.pendingSource
+        if (cue.pendingStart !== undefined && cue.pendingEnd !== undefined) {
+          cue.start = cue.pendingStart
+          cue.end = cue.pendingEnd
+        }
+        cue.pendingSource = undefined
+        cue.pendingStart = undefined
+        cue.pendingEnd = undefined
+        cue.status = 'draft'
+      })
+    },
+    /** 从存档恢复片方去掉的台词（译文随之找回） */
+    restoreArchived(archiveId: string) {
+      const archived = this.document.archivedCues.find((item) => item.id === archiveId)
+      if (!archived) throw new Error('ARCHIVE_NOT_FOUND')
+      const lineTaken = archived.lineNo !== null
+        && this.document.cues.some((cue) => cue.lineNo === archived.lineNo)
+      if (lineTaken) throw new Error('LINE_NO_TAKEN')
+      const restored: Cue = { ...archived, archivedAt: undefined }
+      delete (restored as Partial<ArchivedCue>).removedByPackageId
+      delete (restored as Partial<ArchivedCue>).removedAt
+      delete (restored as Partial<ArchivedCue>).restored
+      this.commit('restore-archived', (cues) => {
+        if (restored.lineNo === null) cues.push(restored)
+        else {
+          const index = cues.findIndex((cue) => cue.lineNo !== null && (cue.lineNo as number) > (restored.lineNo as number))
+          index >= 0 ? cues.splice(index, 0, restored) : cues.push(restored)
+        }
+      }, restored.id)
+      const index = this.document.archivedCues.findIndex((item) => item.id === archiveId)
+      if (index >= 0) {
+        this.document.archivedCues[index].restored = true
+        this.markChanged('restore-archived')
+      }
+    },
+    /** 彻底删除存档中的译文 */
+    deleteArchived(archiveId: string) {
+      const index = this.document.archivedCues.findIndex((item) => item.id === archiveId)
+      if (index < 0) return
+      this.document.archivedCues.splice(index, 1)
+      this.markChanged('delete-archived')
     },
   },
 })
