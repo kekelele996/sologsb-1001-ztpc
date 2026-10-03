@@ -114,6 +114,30 @@ kbd { padding: 2px 5px; border: 1px solid #5a6981; border-radius: 4px; color: wh
 .snapshot-item { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid #edf0f4; }
 .snapshot-item div { display: flex; flex-direction: column; gap: 3px; }
 .snapshot-item small, .snapshot-item span { color: #7b8799; font-size: 11px; }
+.revision-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0; }
+.revision-diff.vertical { grid-template-columns: 1fr; }
+.revision-col { padding: 7px 9px; border-radius: 7px; font-size: 11px; line-height: 1.5; }
+.revision-col small { display: block; margin-bottom: 3px; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+.revision-col p { margin: 0; }
+.revision-col.old { background: #f4f6fa; border-left: 3px solid #aeb9c9; }
+.revision-col.old small { color: #8893a5; }
+.revision-col.old p { color: #6b7688; text-decoration: line-through; text-decoration-color: rgba(120,132,150,.55); }
+.revision-col.new { background: #fff6e8; border-left: 3px solid #e6a23c; }
+.revision-col.new small { color: #b47409; }
+.revision-col.new p { color: #5f4413; }
+.revision-card { padding: 10px; border: 1px solid #f0d9ac; border-radius: 9px; background: #fffaf1; }
+.revision-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.revision-note { margin: 4px 0; color: #8a6414; font-size: 11px; line-height: 1.5; }
+.revision-note.danger { color: #a83a34; }
+.revision-hint { margin-bottom: 10px; color: #7c8799; font-size: 11px; line-height: 1.55; }
+.template-hint { margin: 8px 2px 0; color: #98a3b4; font-size: 11px; line-height: 1.5; }
+.package-item, .archive-item { padding: 10px 0; border-bottom: 1px solid #edf0f4; }
+.package-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.package-item div { display: flex; flex-direction: column; gap: 3px; }
+.package-item small, .archive-head small { color: #7b8799; font-size: 11px; }
+.archive-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 5px; }
+.archive-source { margin: 2px 0; color: #55627a; font-size: 12px; text-decoration: line-through; text-decoration-color: rgba(120,132,150,.5); }
+.archive-target { margin: 2px 0; color: #1d2b41; font-size: 13px; font-weight: 580; }
 @media (max-width: 1380px) {
   .workspace { grid-template-columns: 224px minmax(580px, 1fr) 330px; }
   .shortcut-bar { left: 224px; right: 330px; }

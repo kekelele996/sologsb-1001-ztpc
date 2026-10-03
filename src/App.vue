@@ -3,17 +3,20 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Clock, Delete, DocumentCopy, Download, EditPen, Files, Lock, MagicStick, Monitor,
-  RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
+  Clock, Delete, DocumentCopy, Download, EditPen, Files, FolderOpened, Lock, MagicStick, Monitor,
+  RefreshLeft, RefreshRight, Search, Switch, Unlock, UploadFilled,
 } from '@element-plus/icons-vue'
 import { useEditorStore } from './store/editor'
 import type { Cue, CueConflict } from './types'
 import { formatTime } from './utils/subtitle'
+import { RevisionParseError } from './utils/revision'
 
 const store = useEditorStore()
 const { document: project, selectedCue, selectedCueId, visibleCues, saveState, conflict, online, timelineZoom, actorFilter } = storeToRefs(store)
 const fileInput = ref<HTMLInputElement>()
+const revisionInput = ref<HTMLInputElement>()
 const snapshotDialog = ref(false)
+const archiveDialog = ref(false)
 const snapshotName = ref('')
 const search = ref('')
 
@@ -75,6 +78,31 @@ async function importFile(event: Event) {
     ElMessage.success(store.t('importDone', { count }))
   } catch {
     ElMessage.error(store.t('importError'))
+  } finally {
+    input.value = ''
+  }
+}
+async function importRevision(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const result = store.applyRevisionPackage(await file.text())
+    ElMessage.success(store.t('revisionApplyDone', {
+      version: result.sourceVersion,
+      changed: result.changed,
+      added: result.added,
+      removed: result.removed,
+      lockedPending: result.lockedPending,
+    }))
+  } catch (error) {
+    if (error instanceof RevisionParseError) {
+      ElMessage.error(store.t('revisionParseError'))
+    } else if (error instanceof Error && error.message === 'REVISION_DUPLICATE') {
+      ElMessage.warning(store.t('revisionDuplicate'))
+    } else {
+      ElMessage.error(store.t('revisionParseError'))
+    }
   } finally {
     input.value = ''
   }
@@ -144,7 +172,10 @@ const handleOffline = () => setOnline(false)
         </el-select>
         <span class="save-state" :class="saveState"><i />{{ saveLabel }}</span>
         <input ref="fileInput" class="file-input" type="file" accept=".srt,.txt,text/plain" @change="importFile" />
+        <input ref="revisionInput" class="file-input" type="file" accept=".json,application/json" @change="importRevision" />
         <el-button :icon="UploadFilled" @click="fileInput?.click()">{{ store.t('import') }}</el-button>
+        <el-button type="warning" plain :icon="Switch" @click="revisionInput?.click()">{{ store.t('applyRevision') }}</el-button>
+        <el-button :icon="FolderOpened" @click="archiveDialog = true">{{ store.t('revisionArchive') }}</el-button>
         <el-button :icon="Download" @click="store.exportSrt">{{ store.t('export') }}</el-button>
         <el-button type="primary" :icon="DocumentCopy" @click="snapshotDialog = true">{{ store.t('snapshot') }}</el-button>
       </div>
@@ -196,6 +227,7 @@ const handleOffline = () => setOnline(false)
             <div class="project-meta">
               <span>{{ store.t('cueCount', { count: project.cues.length }) }}</span>
               <span>{{ store.t('characterCount', { count: totalCharacters }) }}</span>
+              <span>{{ store.t('sourceVersionLabel') }}: <b>{{ project.sourceVersion }}</b></span>
               <span>revision {{ project.revision }}</span>
             </div>
           </div>
@@ -245,9 +277,21 @@ const handleOffline = () => setOnline(false)
                 <code>{{ formatTime(cue.start) }} → {{ formatTime(cue.end) }}</code>
                 <el-tag size="small" :type="statusType(cue.status)">{{ statusLabel(cue.status) }}</el-tag>
                 <el-icon v-if="cue.locked"><Lock /></el-icon>
+                <el-tag v-if="cue.removedInRevision" size="small" type="danger" effect="dark">{{ store.t('removedByStudioTag') }}</el-tag>
+                <el-tag v-else-if="cue.sourceChanged" size="small" type="warning" effect="dark">{{ store.t('sourceChangedTag') }}</el-tag>
                 <span class="cue-warning-count" v-if="cueWarnings(cue).length">{{ cueWarnings(cue).length }} context</span>
               </div>
-              <p class="source-text">{{ cue.source }}</p>
+              <div v-if="cue.pendingSource !== undefined || cue.oldSource !== undefined" class="revision-diff">
+                <div class="revision-col old">
+                  <small>{{ store.t('oldSourceLabel') }}</small>
+                  <p>{{ cue.oldSource ?? cue.source }}</p>
+                </div>
+                <div class="revision-col new">
+                  <small>{{ cue.pendingSource !== undefined ? store.t('pendingSourceLabel') : store.t('newSourceLabel') }}</small>
+                  <p>{{ cue.pendingSource ?? cue.source }}</p>
+                </div>
+              </div>
+              <p v-if="cue.pendingSource === undefined && cue.oldSource === undefined" class="source-text">{{ cue.source }}</p>
               <p class="target-text" :class="{ empty: !cue.target }">{{ cue.target || '尚未填写译文' }}</p>
             </div>
             <div class="cue-quick-actions">
@@ -269,6 +313,30 @@ const handleOffline = () => setOnline(false)
           <template v-if="selectedCue.locked">
             <div class="locked-note"><el-icon><Lock /></el-icon>{{ store.t('locked') }}</div>
           </template>
+          <div v-if="selectedCue.sourceChanged || selectedCue.pendingSource !== undefined" class="revision-card">
+            <div class="revision-card-head">
+              <el-tag size="small" :type="selectedCue.removedInRevision ? 'danger' : 'warning'" effect="dark">
+                {{ selectedCue.removedInRevision ? store.t('removedByStudioTag') : selectedCue.pendingSource !== undefined ? store.t('pendingRevisionTag') : store.t('sourceChangedTag') }}
+              </el-tag>
+            </div>
+            <p v-if="selectedCue.locked && selectedCue.pendingSource !== undefined" class="revision-note">{{ store.t('revisionLockedNote') }}</p>
+            <p v-if="selectedCue.removedInRevision" class="revision-note danger">{{ store.t('revisionRemovedNote') }}</p>
+            <div v-if="selectedCue.pendingSource !== undefined || selectedCue.oldSource !== undefined" class="revision-diff vertical">
+              <div class="revision-col old">
+                <small>{{ store.t('oldSourceLabel') }} · {{ formatTime(selectedCue.oldStart ?? selectedCue.start) }} → {{ formatTime(selectedCue.oldEnd ?? selectedCue.end) }}</small>
+                <p>{{ selectedCue.oldSource ?? selectedCue.source }}</p>
+              </div>
+              <div class="revision-col new" v-if="selectedCue.pendingSource !== undefined">
+                <small>{{ store.t('pendingSourceLabel') }} · {{ formatTime(selectedCue.pendingStart ?? selectedCue.start) }} → {{ formatTime(selectedCue.pendingEnd ?? selectedCue.end) }}</small>
+                <p>{{ selectedCue.pendingSource }}</p>
+              </div>
+            </div>
+            <el-button
+              v-if="!selectedCue.locked && selectedCue.pendingSource !== undefined"
+              size="small" type="warning" plain
+              @click="store.adoptPendingRevision(selectedCue.id)"
+            >{{ store.t('adoptRevision') }}</el-button>
+          </div>
           <label>{{ store.t('actor') }}</label>
           <el-select :model-value="selectedCue.actorId" :disabled="selectedCue.locked" @change="updateSelected({ actorId: String($event) }, 'actor')">
             <el-option v-for="actor in project.actors" :key="actor.id" :label="actor.name" :value="actor.id" />
@@ -328,6 +396,39 @@ const handleOffline = () => setOnline(false)
         <p v-if="!project.snapshots.length" class="empty-state">{{ store.t('noSnapshots') }}</p>
       </div>
       <template #footer><el-button type="primary" @click="createSnapshot">{{ store.t('snapshot') }}</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="archiveDialog" :title="store.t('revisionArchive')" width="640px">
+      <el-tabs>
+        <el-tab-pane :label="store.t('packagesTab')">
+          <div class="revision-hint">{{ store.t('revisionImportHint') }}</div>
+          <div v-for="record in project.appliedPackages" :key="record.packageId + record.contentHash" class="package-item">
+            <div>
+              <b>{{ record.packageId }}</b>
+              <small>{{ store.t('sourceVersionLabel') }}: {{ record.sourceVersion }} · {{ store.t('appliedAt') }} {{ new Date(record.appliedAt).toLocaleString() }}</small>
+            </div>
+            <el-tag size="small" type="info">
+              {{ store.t('revisionStats', { changed: record.changed, added: record.added, removed: record.removed, lockedPending: record.lockedPending }) }}
+            </el-tag>
+          </div>
+          <p v-if="!project.appliedPackages.length" class="empty-state">{{ store.t('emptyPackages') }}</p>
+        </el-tab-pane>
+        <el-tab-pane :label="`${store.t('archiveTab')} (${project.archive.length})`">
+          <div v-for="entry in project.archive" :key="entry.id" class="archive-item">
+            <div class="archive-head">
+              <b>{{ store.t('archivedCueNumber', { number: entry.cueNumber }) }}</b>
+              <small>{{ store.t('archivedInPackage', { id: entry.packageId, version: entry.sourceVersion }) }} · {{ new Date(entry.archivedAt).toLocaleString() }}</small>
+            </div>
+            <p class="archive-source">{{ entry.cue.source }}</p>
+            <p class="archive-target">{{ entry.cue.target || '—' }}</p>
+          </div>
+          <p v-if="!project.archive.length" class="empty-state">{{ store.t('emptyArchive') }}</p>
+        </el-tab-pane>
+      </el-tabs>
+      <template #footer>
+        <el-button :icon="Download" @click="store.downloadRevisionTemplate">{{ store.t('revisionTemplate') }}</el-button>
+      </template>
+      <p class="template-hint">{{ store.t('revisionTemplateHint') }}</p>
     </el-dialog>
   </div>
 </template>
